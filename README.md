@@ -7,7 +7,7 @@ MCP server for Shopify with **multi-account support** — talk to multiple store
 - **Multiple accounts of different kinds** in one server:
   - `store` accounts → Admin GraphQL API (products, orders, customers, inventory, collections, shop info, raw GraphQL) and optionally the Storefront GraphQL API
   - `partner` accounts → Partner GraphQL API (transactions, app events, raw GraphQL)
-- **24 tools**, all namespaced `shopify_*`
+- **49 tools**, all namespaced `shopify_*`
 - Raw GraphQL escape hatches for all three APIs — anything not covered by a dedicated tool is still reachable
 - Numeric IDs auto-expand to Shopify GIDs (`123` → `gid://shopify/Product/123`)
 - Tokens are never returned by any tool
@@ -103,6 +103,13 @@ Notes:
 | Customers | `shopify_list_customers`, `shopify_get_customer`, `shopify_create_customer`, `shopify_update_customer` |
 | Inventory | `shopify_list_locations`, `shopify_get_inventory_levels`, `shopify_adjust_inventory` |
 | Collections | `shopify_list_collections`, `shopify_get_collection` |
+| Metafields | `shopify_get_metafields`, `shopify_set_metafields`, `shopify_delete_metafields` |
+| Draft orders | `shopify_list_draft_orders`, `shopify_get_draft_order`, `shopify_create_draft_order`, `shopify_complete_draft_order`, `shopify_delete_draft_order` |
+| Discounts | `shopify_list_discounts`, `shopify_create_discount_code`, `shopify_toggle_discount`, `shopify_delete_discount` |
+| Webhooks | `shopify_list_webhooks`, `shopify_create_webhook`, `shopify_delete_webhook` |
+| Fulfillment | `shopify_list_fulfillment_orders`, `shopify_create_fulfillment`, `shopify_update_tracking` |
+| Files/Media | `shopify_list_files`, `shopify_upload_file`, `shopify_attach_product_media`, `shopify_delete_files` |
+| Bulk | `shopify_run_bulk_query`, `shopify_get_bulk_operation`, `shopify_cancel_bulk_operation` |
 | GraphQL | `shopify_admin_graphql`, `shopify_storefront_graphql` |
 | Partner | `shopify_partner_graphql`, `shopify_partner_transactions`, `shopify_partner_app_events` |
 

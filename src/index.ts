@@ -8,6 +8,13 @@ import { orderTools } from "./tools/orders.js";
 import { customerTools } from "./tools/customers.js";
 import { inventoryTools } from "./tools/inventory.js";
 import { collectionTools } from "./tools/collections.js";
+import { metafieldTools } from "./tools/metafields.js";
+import { draftOrderTools } from "./tools/draft_orders.js";
+import { discountTools } from "./tools/discounts.js";
+import { webhookTools } from "./tools/webhooks.js";
+import { fulfillmentTools } from "./tools/fulfillment.js";
+import { mediaTools } from "./tools/media.js";
+import { bulkTools } from "./tools/bulk.js";
 import { graphqlTools } from "./tools/graphql.js";
 import { partnerTools } from "./tools/partner.js";
 
@@ -24,6 +31,13 @@ const allTools = [
   ...customerTools,
   ...inventoryTools,
   ...collectionTools,
+  ...metafieldTools,
+  ...draftOrderTools,
+  ...discountTools,
+  ...webhookTools,
+  ...fulfillmentTools,
+  ...mediaTools,
+  ...bulkTools,
   ...graphqlTools,
   ...partnerTools,
 ];
