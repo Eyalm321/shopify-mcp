@@ -9,7 +9,17 @@ query Transactions($first: Int!, $after: String, $createdAtMin: DateTime, $creat
       cursor
       node {
         id createdAt __typename
-        ... on AppSale {
+        ... on AppSubscriptionSale {
+          netAmount { amount currencyCode }
+          app { id name }
+          shop { id myshopifyDomain }
+        }
+        ... on AppOneTimeSale {
+          netAmount { amount currencyCode }
+          app { id name }
+          shop { id myshopifyDomain }
+        }
+        ... on AppUsageSale {
           netAmount { amount currencyCode }
           app { id name }
           shop { id myshopifyDomain }

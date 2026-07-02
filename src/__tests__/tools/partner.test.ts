@@ -47,7 +47,9 @@ describe("partnerTools", () => {
       });
       const [query, variables, account] = mockPartner.mock.calls[0];
       expect(query).toContain("transactions(first: $first");
-      expect(query).toContain("... on AppSale");
+      expect(query).toContain("... on AppSubscriptionSale");
+      expect(query).toContain("... on AppOneTimeSale");
+      expect(query).toContain("... on AppUsageSale");
       expect(variables).toEqual({
         first: 20,
         after: undefined,
