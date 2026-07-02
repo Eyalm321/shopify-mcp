@@ -1,6 +1,6 @@
 {
   "name": "shopify-multi-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for Shopify with multi-account support — Admin API, Partner API, and Storefront API across multiple stores and partner organizations",
   "main": "dist/index.js",
   "bin": {

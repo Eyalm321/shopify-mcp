@@ -73,6 +73,25 @@ Set `SHOPIFY_ACCOUNTS_FILE` to the path of a JSON file:
 ]
 ```
 
+### Store auth: static token or client credentials
+
+Store accounts support two auth methods:
+
+- **Static token** — `accessToken: "shpat_..."` from a legacy custom app ("Develop apps" in store admin). Never expires.
+- **Client credentials** — `clientId` + `clientSecret` from a Dev Dashboard app. The server mints the Admin token via the OAuth client-credentials grant automatically and refreshes it before the ~24h expiry:
+
+```json
+{
+  "name": "my-store",
+  "type": "store",
+  "storeDomain": "my-store.myshopify.com",
+  "clientId": "54a7...",
+  "clientSecret": "shpss_..."
+}
+```
+
+Env equivalents for the default account: `SHOPIFY_CLIENT_ID` / `SHOPIFY_CLIENT_SECRET`.
+
 Notes:
 
 - `type` may be omitted when it is inferable (`storeDomain` present → store; `organizationId` present → partner)

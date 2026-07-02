@@ -7,7 +7,11 @@ export interface StoreAccount {
   name: string;
   type: "store";
   storeDomain: string;
-  accessToken: string;
+  /** Static Admin API token. Absent when using client-credentials auth. */
+  accessToken?: string;
+  /** Dev Dashboard app client ID for the OAuth client-credentials grant. */
+  clientId?: string;
+  clientSecret?: string;
   apiVersion: string;
   storefrontAccessToken?: string;
 }
@@ -32,6 +36,8 @@ interface ParsedEntry {
   shop?: string;
   accessToken?: string;
   token?: string;
+  clientId?: string;
+  clientSecret?: string;
   apiVersion?: string;
   storefrontAccessToken?: string;
   organizationId?: string | number;
@@ -44,6 +50,8 @@ let cachedSnapshot: string | undefined;
 const ENV_VARS = [
   "SHOPIFY_STORE_DOMAIN",
   "SHOPIFY_ACCESS_TOKEN",
+  "SHOPIFY_CLIENT_ID",
+  "SHOPIFY_CLIENT_SECRET",
   "SHOPIFY_API_VERSION",
   "SHOPIFY_STOREFRONT_ACCESS_TOKEN",
   "SHOPIFY_PARTNER_ORGANIZATION_ID",
@@ -92,13 +100,15 @@ function parseEntry(entry: unknown, source: string, i: number): Account {
     throw new Error(`${source}[${i}] has invalid type "${type}" — must be "store" or "partner"`);
   }
 
-  if (!accessToken) {
-    throw new Error(`${source}[${i}] is missing accessToken`);
-  }
-
   if (type === "store") {
     if (!rawDomain) {
       throw new Error(`${source}[${i}] (type "store") is missing storeDomain`);
+    }
+    const hasClientCreds = Boolean(e.clientId && e.clientSecret);
+    if (!accessToken && !hasClientCreds) {
+      throw new Error(
+        `${source}[${i}] (type "store") needs accessToken, or clientId + clientSecret for the client-credentials grant`
+      );
     }
     const name = (e.name ?? "default").trim().toLowerCase();
     return {
@@ -106,9 +116,15 @@ function parseEntry(entry: unknown, source: string, i: number): Account {
       type: "store",
       storeDomain: normalizeStoreDomain(rawDomain),
       accessToken,
+      clientId: e.clientId,
+      clientSecret: e.clientSecret,
       apiVersion: e.apiVersion?.trim() || DEFAULT_ADMIN_API_VERSION,
       storefrontAccessToken: e.storefrontAccessToken,
     };
+  }
+
+  if (!accessToken) {
+    throw new Error(`${source}[${i}] is missing accessToken`);
   }
 
   if (rawOrgId === undefined || rawOrgId === "") {
@@ -166,12 +182,20 @@ function parseAccounts(): Map<string, Account> {
 
   const map = new Map<string, Account>();
 
-  if (process.env.SHOPIFY_STORE_DOMAIN && process.env.SHOPIFY_ACCESS_TOKEN) {
+  const envClientCreds = Boolean(
+    process.env.SHOPIFY_CLIENT_ID && process.env.SHOPIFY_CLIENT_SECRET
+  );
+  if (
+    process.env.SHOPIFY_STORE_DOMAIN &&
+    (process.env.SHOPIFY_ACCESS_TOKEN || envClientCreds)
+  ) {
     map.set("default", {
       name: "default",
       type: "store",
       storeDomain: normalizeStoreDomain(process.env.SHOPIFY_STORE_DOMAIN),
-      accessToken: process.env.SHOPIFY_ACCESS_TOKEN,
+      accessToken: process.env.SHOPIFY_ACCESS_TOKEN || undefined,
+      clientId: process.env.SHOPIFY_CLIENT_ID || undefined,
+      clientSecret: process.env.SHOPIFY_CLIENT_SECRET || undefined,
       apiVersion: process.env.SHOPIFY_API_VERSION?.trim() || DEFAULT_ADMIN_API_VERSION,
       storefrontAccessToken: process.env.SHOPIFY_STOREFRONT_ACCESS_TOKEN || undefined,
     });
@@ -268,6 +292,7 @@ export function listConfiguredAccounts(): Array<{
   type: AccountType;
   target: string;
   apiVersion: string;
+  auth?: "token" | "client_credentials";
   hasStorefrontToken?: boolean;
 }> {
   return [...parseAccounts().values()].map((a) =>
@@ -277,6 +302,7 @@ export function listConfiguredAccounts(): Array<{
           type: a.type,
           target: a.storeDomain,
           apiVersion: a.apiVersion,
+          auth: (a.accessToken ? "token" : "client_credentials") as "token" | "client_credentials",
           hasStorefrontToken: Boolean(a.storefrontAccessToken),
         }
       : {
@@ -288,10 +314,73 @@ export function listConfiguredAccounts(): Array<{
   );
 }
 
-/** Test-only: clear the parsed-accounts cache. */
+/** Test-only: clear the parsed-accounts cache and minted-token cache. */
 export function _resetAccountsCache(): void {
   cachedAccounts = null;
   cachedSnapshot = undefined;
+  mintedTokens.clear();
+}
+
+interface MintedToken {
+  token: string;
+  expiresAt: number;
+}
+
+const mintedTokens = new Map<string, MintedToken>();
+
+/** Safety margin before expiry at which a cached minted token is refreshed. */
+const TOKEN_REFRESH_SLACK_MS = 5 * 60 * 1000;
+
+/**
+ * Resolve the Admin API token for a store account: static accessToken when
+ * present, otherwise a token minted via the OAuth client-credentials grant
+ * (Dev Dashboard apps; tokens expire after ~24h) and cached until shortly
+ * before expiry.
+ */
+async function getStoreToken(acc: StoreAccount): Promise<string> {
+  if (acc.accessToken) return acc.accessToken;
+  if (!acc.clientId || !acc.clientSecret) {
+    throw new Error(`Store account "${acc.name}" has no accessToken or client credentials`);
+  }
+
+  const cached = mintedTokens.get(acc.name);
+  if (cached && Date.now() < cached.expiresAt) return cached.token;
+
+  const url = `https://${acc.storeDomain}/admin/oauth/access_token`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_id: acc.clientId,
+      client_secret: acc.clientSecret,
+      grant_type: "client_credentials",
+    }),
+  });
+
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = (await res.text()).slice(0, 500);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(
+      `Client-credentials token request for account "${acc.name}" failed with HTTP ${res.status}: ${detail || res.statusText}`
+    );
+  }
+
+  const json = (await res.json()) as { access_token?: string; expires_in?: number };
+  if (!json.access_token) {
+    throw new Error(
+      `Client-credentials token request for account "${acc.name}" returned no access_token`
+    );
+  }
+  const expiresInMs = (json.expires_in ?? 3600) * 1000;
+  mintedTokens.set(acc.name, {
+    token: json.access_token,
+    expiresAt: Date.now() + Math.max(expiresInMs - TOKEN_REFRESH_SLACK_MS, 60_000),
+  });
+  return json.access_token;
 }
 
 interface GraphQLErrorEntry {
@@ -347,10 +436,11 @@ export async function adminGraphql<T = unknown>(
   account?: string
 ): Promise<T> {
   const acc = resolveAccount(account, "store") as StoreAccount;
+  const token = await getStoreToken(acc);
   const url = `https://${acc.storeDomain}/admin/api/${acc.apiVersion}/graphql.json`;
   return graphqlRequest<T>(
     url,
-    { "X-Shopify-Access-Token": acc.accessToken },
+    { "X-Shopify-Access-Token": token },
     query,
     variables,
     `Shopify Admin API (${acc.name})`

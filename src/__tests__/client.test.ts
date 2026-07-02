@@ -327,11 +327,13 @@ describe("adminGraphql", () => {
       );
     });
 
-    it("throws when a store entry is missing accessToken", async () => {
+    it("throws when a store entry has no accessToken or client credentials", async () => {
       const file = writeAccounts([{ name: "alpha", storeDomain: "alpha.myshopify.com" }]);
       vi.stubEnv("SHOPIFY_ACCOUNTS_FILE", file);
       _resetAccountsCache();
-      await expect(adminGraphql("{ shop { name } }")).rejects.toThrow(/missing accessToken/);
+      await expect(adminGraphql("{ shop { name } }")).rejects.toThrow(
+        /needs accessToken, or clientId \+ clientSecret/
+      );
     });
 
     it("throws when a store entry is missing storeDomain", async () => {
@@ -361,6 +363,184 @@ describe("adminGraphql", () => {
         /duplicate account name "alpha"/
       );
     });
+  });
+});
+
+describe("client-credentials auth", () => {
+  const mockFetch = vi.fn();
+  let tmp: string;
+
+  function writeAccounts(entries: unknown): string {
+    const file = join(tmp, "accounts.json");
+    writeFileSync(file, JSON.stringify(entries));
+    return file;
+  }
+
+  function tokenResponse(token: string, expiresIn = 86399) {
+    return {
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ access_token: token, expires_in: expiresIn, scope: "write_products" }),
+      text: () => Promise.resolve(""),
+    };
+  }
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+    vi.stubGlobal("fetch", mockFetch);
+    clearShopifyEnv();
+    tmp = mkdtempSync(join(tmpdir(), "shopify-mcp-test-"));
+    const file = writeAccounts([
+      {
+        name: "ccstore",
+        type: "store",
+        storeDomain: "ccstore.myshopify.com",
+        clientId: "client123",
+        clientSecret: "shpss_secret",
+      },
+    ]);
+    vi.stubEnv("SHOPIFY_ACCOUNTS_FILE", file);
+    _resetAccountsCache();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    _resetAccountsCache();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("accepts store entries with clientId+clientSecret and no accessToken", () => {
+    const accounts = listConfiguredAccounts();
+    expect(accounts).toContainEqual({
+      name: "ccstore",
+      type: "store",
+      target: "ccstore.myshopify.com",
+      apiVersion: "2026-04",
+      auth: "client_credentials",
+      hasStorefrontToken: false,
+    });
+  });
+
+  it("rejects store entries with neither accessToken nor client credentials", () => {
+    const file = writeAccounts([
+      { name: "broken", type: "store", storeDomain: "broken.myshopify.com" },
+    ]);
+    vi.stubEnv("SHOPIFY_ACCOUNTS_FILE", file);
+    _resetAccountsCache();
+    expect(() => listConfiguredAccounts()).toThrow(
+      /needs accessToken, or clientId \+ clientSecret/
+    );
+  });
+
+  it("mints a token via the client-credentials grant before the GraphQL call", async () => {
+    mockFetch
+      .mockResolvedValueOnce(tokenResponse("shpat_minted"))
+      .mockResolvedValueOnce(okJson({ data: { shop: { name: "CC" } } }));
+
+    await adminGraphql("{ shop { name } }", undefined, "ccstore");
+
+    expect(mockFetch.mock.calls[0][0]).toBe(
+      "https://ccstore.myshopify.com/admin/oauth/access_token"
+    );
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({
+      client_id: "client123",
+      client_secret: "shpss_secret",
+      grant_type: "client_credentials",
+    });
+    expect(mockFetch.mock.calls[1][0]).toBe(
+      "https://ccstore.myshopify.com/admin/api/2026-04/graphql.json"
+    );
+    expect(mockFetch.mock.calls[1][1].headers["X-Shopify-Access-Token"]).toBe("shpat_minted");
+  });
+
+  it("caches the minted token across requests", async () => {
+    mockFetch
+      .mockResolvedValueOnce(tokenResponse("shpat_minted"))
+      .mockResolvedValue(okJson({ data: {} }));
+
+    await adminGraphql("{ shop { name } }", undefined, "ccstore");
+    await adminGraphql("{ shop { name } }", undefined, "ccstore");
+
+    const tokenCalls = mockFetch.mock.calls.filter((c) =>
+      String(c[0]).includes("/admin/oauth/access_token")
+    );
+    expect(tokenCalls).toHaveLength(1);
+  });
+
+  it("re-mints when the cached token is near expiry", async () => {
+    // expires_in of 60s is entirely inside the 5-minute refresh slack, so the
+    // cache entry only survives the minimum 60s window; simulate passage of time.
+    vi.useFakeTimers();
+    try {
+      mockFetch
+        .mockResolvedValueOnce(tokenResponse("shpat_first", 60))
+        .mockResolvedValueOnce(okJson({ data: {} }))
+        .mockResolvedValueOnce(tokenResponse("shpat_second", 86399))
+        .mockResolvedValueOnce(okJson({ data: {} }));
+
+      await adminGraphql("{ shop { name } }", undefined, "ccstore");
+      vi.advanceTimersByTime(61_000);
+      await adminGraphql("{ shop { name } }", undefined, "ccstore");
+
+      const tokenCalls = mockFetch.mock.calls.filter((c) =>
+        String(c[0]).includes("/admin/oauth/access_token")
+      );
+      expect(tokenCalls).toHaveLength(2);
+      const lastGraphql = mockFetch.mock.calls[3];
+      expect(lastGraphql[1].headers["X-Shopify-Access-Token"]).toBe("shpat_second");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("throws a helpful error when the token request fails", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      text: () => Promise.resolve('{"error":"invalid_client"}'),
+    });
+
+    await expect(adminGraphql("{ shop { name } }", undefined, "ccstore")).rejects.toThrow(
+      /Client-credentials token request for account "ccstore" failed with HTTP 401/
+    );
+  });
+
+  it("prefers a static accessToken over client credentials", async () => {
+    const file = writeAccounts([
+      {
+        name: "both",
+        type: "store",
+        storeDomain: "both.myshopify.com",
+        accessToken: "shpat_static",
+        clientId: "client123",
+        clientSecret: "shpss_secret",
+      },
+    ]);
+    vi.stubEnv("SHOPIFY_ACCOUNTS_FILE", file);
+    _resetAccountsCache();
+    mockFetch.mockResolvedValue(okJson({ data: {} }));
+
+    await adminGraphql("{ shop { name } }", undefined, "both");
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch.mock.calls[0][1].headers["X-Shopify-Access-Token"]).toBe("shpat_static");
+  });
+
+  it("supports env-based default account with client credentials", async () => {
+    vi.stubEnv("SHOPIFY_ACCOUNTS_FILE", "");
+    vi.stubEnv("SHOPIFY_STORE_DOMAIN", "envcc.myshopify.com");
+    vi.stubEnv("SHOPIFY_CLIENT_ID", "envclient");
+    vi.stubEnv("SHOPIFY_CLIENT_SECRET", "envsecret");
+    _resetAccountsCache();
+    mockFetch
+      .mockResolvedValueOnce(tokenResponse("shpat_env"))
+      .mockResolvedValueOnce(okJson({ data: {} }));
+
+    await adminGraphql("{ shop { name } }");
+
+    expect(mockFetch.mock.calls[1][1].headers["X-Shopify-Access-Token"]).toBe("shpat_env");
   });
 });
 
@@ -546,6 +726,7 @@ describe("listConfiguredAccounts", () => {
       type: "store",
       target: "teststore.myshopify.com",
       apiVersion: "2026-04",
+      auth: "token",
       hasStorefrontToken: false,
     });
     expect(accounts).toContainEqual({
