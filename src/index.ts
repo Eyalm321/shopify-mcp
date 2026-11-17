@@ -20,7 +20,7 @@ import { partnerTools } from "./tools/partner.js";
 
 const server = new McpServer({
   name: "shopify-multi-mcp",
-  version: "0.2.2",
+  version: "0.2.3",
 });
 
 const allTools = [
